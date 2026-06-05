@@ -20,8 +20,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "메시지를 입력해주세요." }, { status: 400 });
   }
 
-  // Step 2: validate API key
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  // Step 2: validate API key (strip BOM if PowerShell pipe added one)
+  const apiKey = (process.env.OPENROUTER_API_KEY ?? "").replace(/^﻿/, "");
   if (!apiKey) {
     console.error("[step2] OPENROUTER_API_KEY missing");
     return NextResponse.json({ error: "API 키가 설정되지 않았습니다." }, { status: 500 });
