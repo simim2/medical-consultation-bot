@@ -4,21 +4,32 @@ import { MEDICAL_SYSTEM_PROMPT } from "@/lib/system-prompt";
 import type { ChatResponse, Message } from "@/types";
 
 export async function POST(req: NextRequest) {
+  // Step 1: parse body
+  let message: string, session_id: string, history: Message[];
   try {
     const body = await req.json();
-    const message: string = body.message ?? "";
-    const session_id: string = body.session_id ?? "anonymous";
-    const history: Message[] = Array.isArray(body.history) ? body.history : [];
+    message = (body.message ?? "").trim();
+    session_id = body.session_id ?? "anonymous";
+    history = Array.isArray(body.history) ? body.history : [];
+  } catch (e) {
+    console.error("[step1-parse]", e);
+    return NextResponse.json({ error: "요청 파싱 실패" }, { status: 400 });
+  }
 
-    if (!message.trim()) {
-      return NextResponse.json({ error: "메시지를 입력해주세요." }, { status: 400 });
-    }
+  if (!message) {
+    return NextResponse.json({ error: "메시지를 입력해주세요." }, { status: 400 });
+  }
 
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json({ error: "API 키가 설정되지 않았습니다." }, { status: 500 });
-    }
+  // Step 2: validate API key
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    console.error("[step2] OPENROUTER_API_KEY missing");
+    return NextResponse.json({ error: "API 키가 설정되지 않았습니다." }, { status: 500 });
+  }
 
+  // Step 3: call OpenRouter
+  let rawContent = "{}";
+  try {
     const conversationHistory = history.slice(-6).map((msg) => ({
       role: msg.role,
       content: msg.content,
@@ -29,7 +40,7 @@ export async function POST(req: NextRequest) {
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
-        "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL ?? "https://medical-consultation-bot-topaz.vercel.app",
+        "HTTP-Referer": "https://medical-consultation-bot-topaz.vercel.app",
         "X-Title": "Medical Consultation Bot",
       },
       body: JSON.stringify({
@@ -46,41 +57,48 @@ export async function POST(req: NextRequest) {
 
     if (!response.ok) {
       const err = await response.text();
-      console.error("OpenRouter error:", response.status, err);
-      return NextResponse.json({ error: "AI 응답 생성 중 오류가 발생했습니다." }, { status: 502 });
+      console.error("[step3] OpenRouter HTTP error:", response.status, err.slice(0, 300));
+      return NextResponse.json({ error: "AI 응답 오류" }, { status: 502 });
     }
 
     const data = await response.json();
-    const rawContent: string = data.choices?.[0]?.message?.content ?? "{}";
+    rawContent = data?.choices?.[0]?.message?.content ?? "{}";
+    console.log("[step3] rawContent slice:", String(rawContent).slice(0, 100));
+  } catch (e) {
+    console.error("[step3-fetch]", e instanceof Error ? e.message : String(e));
+    return NextResponse.json({ error: "AI 호출 실패" }, { status: 502 });
+  }
 
-    let parsed: ChatResponse;
-    try {
-      parsed = JSON.parse(rawContent);
-    } catch {
-      parsed = {
-        message: rawContent,
-        classification: {
-          intent: "general_inquiry",
-          symptoms: [],
-          suspected_conditions: [],
-          recommended_department: "내과",
-          is_emergency: false,
-          urgency_level: "low",
-        },
-      };
-    }
+  // Step 4: parse AI JSON
+  let parsed: ChatResponse;
+  try {
+    parsed = JSON.parse(rawContent);
+  } catch {
+    parsed = {
+      message: rawContent,
+      classification: {
+        intent: "general_inquiry",
+        symptoms: [],
+        suspected_conditions: [],
+        recommended_department: "내과",
+        is_emergency: false,
+        urgency_level: "low",
+      },
+    };
+  }
 
+  // Step 5: save to Supabase
+  try {
     await saveConsultation({
       session_id,
       patient_message: message,
       ai_response: parsed.message ?? rawContent,
       classification: parsed.classification ?? null,
     });
-
-    return NextResponse.json(parsed);
-  } catch (error) {
-    const msg = error instanceof Error ? error.stack ?? error.message : String(error);
-    console.error("Chat API error:", msg);
-    return NextResponse.json({ error: "서버 오류가 발생했습니다." }, { status: 500 });
+  } catch (e) {
+    console.error("[step5-supabase]", e instanceof Error ? e.message : String(e));
+    // non-fatal: still return the AI response
   }
+
+  return NextResponse.json(parsed);
 }
