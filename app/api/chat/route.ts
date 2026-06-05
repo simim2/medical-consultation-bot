@@ -69,10 +69,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "AI 호출 실패" }, { status: 502 });
   }
 
-  // Step 4: parse AI JSON
+  // Step 4: parse AI JSON (strip markdown fences if model wrapped output)
+  const cleanContent = rawContent
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```\s*$/, "")
+    .trim();
+
   let parsed: ChatResponse;
   try {
-    parsed = JSON.parse(rawContent);
+    parsed = JSON.parse(cleanContent);
   } catch {
     parsed = {
       message: rawContent,
